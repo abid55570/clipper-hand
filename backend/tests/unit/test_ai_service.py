@@ -21,8 +21,7 @@ class TestHighlightDetection:
         mock_job.id = uuid.uuid4()
 
         with patch("app.services.ai_service.get_video", return_value=mock_video), \
-             patch("app.services.ai_service.create_job", return_value=mock_job), \
-             patch("worker.tasks.ai_tasks.detect_highlights.delay", side_effect=Exception("No celery")):
+             patch("app.services.ai_service.create_job", return_value=mock_job):
             result = await start_highlight_detection(mock_db_session, mock_video.id)
             assert "job_id" in result
 
