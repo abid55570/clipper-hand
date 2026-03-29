@@ -1,0 +1,113 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: clipper
+      POSTGRES_PASSWORD: clipper_pass
+      POSTGRES_DB: clipper_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipper -d clipper_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clipper:clipper_pass@postgres:5432/clipper_db
+      DATABASE_URL_SYNC: postgresql://clipper:clipper_pass@postgres:5432/clipper_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      UPLOAD_DIR: /app/uploads
+      MEDIA_DIR: /app/media
+      DEBUG: "true"
+      LOG_LEVEL: INFO
+      CORS_ORIGINS: "http://localhost:5173,http://localhost:3000"
+    volumes:
+      - ./backend:/app
+      - upload_data:/app/uploads
+      - media_data:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      bash -c "alembic upgrade head &&
+               uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL_SYNC: postgresql://clipper:clipper_pass@postgres:5432/clipper_db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      UPLOAD_DIR: /app/uploads
+      MEDIA_DIR: /app/media
+      WHISPER_MODEL_SIZE: base
+    volumes:
+      - ./worker:/app/worker
+      - upload_data:/app/uploads
+      - media_data:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A worker.app worker -l info -Q video_processing,transcription,ai_analysis,maintenance -c 2
+
+  worker-beat:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL_SYNC: postgresql://clipper:clipper_pass@postgres:5432/clipper_db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - ./worker:/app/worker
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: celery -A worker.app beat -l info
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: http://localhost:8000
+    command: npm run dev -- --host 0.0.0.0
+
+volumes:
+  postgres_data:
+  upload_data:
+  media_data:
