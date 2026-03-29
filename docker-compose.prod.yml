@@ -1,0 +1,85 @@
+version: "3.8"
+
+# Production overrides - use with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  backend:
+    environment:
+      DEBUG: "false"
+      LOG_LEVEL: WARNING
+    command: >
+      bash -c "alembic upgrade head &&
+               uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4"
+    volumes:
+      - upload_data:/app/uploads
+      - media_data:/app/media
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  worker:
+    command: celery -A worker.app worker -l warning -Q video_processing -c 2 --max-memory-per-child=2000000
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  worker-transcription:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL_SYNC: postgresql://clipper:clipper_pass@postgres:5432/clipper_db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      UPLOAD_DIR: /app/uploads
+      MEDIA_DIR: /app/media
+      WHISPER_MODEL_SIZE: small
+    volumes:
+      - upload_data:/app/uploads
+      - media_data:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A worker.app worker -l warning -Q transcription -c 1 --max-memory-per-child=4000000
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+  worker-ai:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL_SYNC: postgresql://clipper:clipper_pass@postgres:5432/clipper_db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      UPLOAD_DIR: /app/uploads
+      MEDIA_DIR: /app/media
+    volumes:
+      - upload_data:/app/uploads
+      - media_data:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A worker.app worker -l warning -Q ai_analysis -c 2
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    command: npm run build
+    # In production, serve with nginx instead
+
+  worker-beat:
+    command: celery -A worker.app beat -l warning
